@@ -12,6 +12,7 @@ import urllib2
 import urllib
 import signal
 import math
+import termios
 
 #Phidget specific imports
 from Phidgets.PhidgetException import PhidgetErrorCodes, PhidgetException
@@ -21,77 +22,146 @@ from Phidgets.Phidget import PhidgetLogLevel
 
 #Home path
 homepath ='/home/pi/Desktop/Sign-In Script/'
-audlib = homepath + 'aud/'
-logpath = homepath + 'log/'
+
+#Sound library path
+audlib=homepath + 'aud/'
+
+#Time Card log path
+logpath=homepath + 'log/'
+
+#Displayed Message file
+display='/var/www/html/message.txt'
+
+#Tag Assignment list file
+tags='/var/www/html/tag.txt'
 
 
-hiddenpath = '/var/www/html/'
-display= hiddenpath + 'message.txt'
-tags= hiddenpath + 'tag.txt'
-commands= hiddenpath + 'commands.txt'
-
-
+old_settings = None 
+global name
 global tagsList
-global commandsList
+#global tagStatus
 
 tagsList=list()
-commandsList=list()
-
-with open(tags) as f:
-	tagsList = f.read().splitlines()
-
-with open(commands) as f:
-	commandsList = f.read().splitlines()
+#tagStatus=list()
 
 #Create an RFID object
 try:
-	rfid = RFID()
+    rfid = RFID()
 except RuntimeError as e:
-	print("Runtime Exception: %s" % e.details)
-    	reboot()
+    print("Runtime Exception: %s" % e.details)
+    print("Exiting....")
+    exit(1)
+     
+tagsList=list()
+#tagStatus=list()
+
+with open(tags) as f:
+    tagsList = f.read().splitlines()
                      
-def login(name)
-	#TODO login by name
-    	time_card = logpath + name + '.log'
-	timeCardExists = False
-	try:
-        	timeCardExists = os.path.isfile(time_card)             
-	except ValueError:
-        	print("Error")
+#for index in range(len(tagsList)):
+#    tagStatus.append(0)
+         
+#Create an RFID object
+try:
+    rfid = RFID()
+except RuntimeError as e:
+    print("Runtime Exception: %s" % e.details)
+    print("Exiting....")
+    exit(1)
 
-def logout(name)
-    	#TODO logout by name
-	now = datetime.datetime.now()
-        time_card = logpath + name + '.log'
-        timeCardExists = False
-	
-	try:
-        	timeCardExists = os.path.isfile(time_card)
-        except ValueError:
-		print("Error")
-	
-        time_line= times[len(times)-1]
-        time_msg = "{}".format( now.strftime('%m/%d/%y,%H:%M:%S,'))
-        date_time = time_msg.split(",")
-        timeIn = time_ary[1]
-        timeOut = date_time[1]
-        delta = getDelta(timeIn, timeOut)
-        print("Time logged: " + delta)
-        print(time_msg)
-        printToFile(time_card, time_msg + delta, False)
-        printToFile(display, "Goodbye, " + name + " (" + delta + ")", True)
+def actionOnAttach(e):
+    #TODO  performed once when device attached
+    time.sleep(5)
+    playSound('charge')
 
-def getName(tag)
-    #TODO get name of student by tag
-    name = "None"
-    for idx in range(0,len(tagsList)):
+def actionOnDetach(e):
+    #TODO  performed once when device detached
+    playSound('error')
+    time.sleep(3)
+    reboot()
+
+def actionOnOutputChange(e):
+    #TODO  performed once when terminal block output changes
+    print("Attached")
+
+def actionOnTagFound(e):
+    #TODO  performed once when tag is in range
+    t = e.tag
+    if t == "Guest1":
+        reboot()
+    print(t)
+
+    try:
+        for idx in range(0,len(tagsList)):
 	    assignee=tagsList[idx].split('=')
-	    if assignee[0]==tag:
+	    if assignee[0]==e.tag:
 	        name=assignee[1]
 		break
 	    else:
-		name='Guest_' + tag
-    return name
+		name='Guest_' + t
+        now = datetime.datetime.now()
+        time_card = logpath + name + '.log'
+        timeCardExists = os.path.isfile(time_card)
+        overwriteCard = not timeCardExists
+
+        printToLog(name, now)
+
+        if timeCardExists:
+            in_count=0
+            out_count=0
+            times= list()
+            with open(time_card) as ts:
+                line = ts.read()
+                in_count+=line.count("In")
+                out_count+=line.count("Out")
+                
+            with open(time_card) as ts:
+                times = ts.read().splitlines()
+            
+            time_line = times[len(times)-1]
+            time_ary = time_line.split(",")
+
+            print(times[len(times)-1])
+            print(times[len(times)-1].count(":"))
+
+            while(len(time_ary) < 5):
+                time_ary.append("")
+
+            for idx in range(0, 4):
+                print(time_ary[idx])
+            
+            if times[len(times)-1].count(":") >= 4:
+                time_msg = "\n{}".format( now.strftime('%m/%d/%y,%H:%M:%S,'))
+                printToFile(time_card, time_msg, False)
+                printToFile(display, "Welcome, " + name, True)
+            else:
+                time_line= times[len(times)-1]
+                #time_idx= time_line.index(":")
+                #idx_start = time_idx-2
+                #idx_stop = time_idx+6
+                #timeIn = time_line[idx_start : idx_stop]
+                time_msg = "{}".format( now.strftime('%m/%d/%y,%H:%M:%S,'))
+                date_time = time_msg.split(",")
+                timeIn = time_ary[1]
+                timeOut = date_time[1]
+                #idx_start2 = time_msg.find(":")-3
+                #idx_stop2 = idx_start2+9
+                #timeOut = time_msg[idx_start2 : idx_stop2]
+                #print("")
+                #print("Time In: " + timeIn)
+                #print("Time Out: " + timeOut)
+                delta = getDelta(timeIn, timeOut)
+                print("Time logged: " + delta)
+                print(time_msg)
+                printToFile(time_card, time_msg + delta + " " + calculateHours(delta), False)
+                printToFile(display, "Goodbye, " + name + " (" + delta + ")", True)
+        else:
+            time_msg = "{}".format( now.strftime('%m/%d/%y,%H:%M:%S,'))
+            printToFile(time_card, time_msg, True)
+            printToFile(display, "Welcome, " + name, True)
+        playSound('ding')
+    except ValueError:
+        print("Error unknown tag %s" % (t))
 
 def reboot():
     command = "/usr/bin/sudo /sbin/shutdown -r now"
@@ -99,14 +169,20 @@ def reboot():
     output = process.communicate()[0]
     print output
     
-
+       
 def playSound(snd_file):
     snd_file = audlib + snd_file + '.mp3'
     snd = subprocess.Popen(['omxplayer', '-o', 'hdmi', snd_file])
     time.sleep(1)
     snd.communicate('q')
-    snd.terminate()
-    
+
+def printToScreen(text):
+    printToFile(display, text, True)
+
+def actionOnTagLost(e):
+    #TODO  performed once when tag is out of range
+    time.sleep(1)
+
 def getDelta(in_time, out_time):
     t1 = in_time.split(":")
     t2 = out_time.split(":")
@@ -117,6 +193,8 @@ def getDelta(in_time, out_time):
     s1 = int(t1[2])
     s2 = int(t2[2])
 
+    print(in_time)
+    print(out_time)
     total = (3600*h2 + 60*m2 + s2) - (3600*h1 + 60*m1 + s1)
     h = int(math.floor(total/3600))
     total= total-(h*3600)
@@ -139,9 +217,22 @@ def getDelta(in_time, out_time):
     
     return(h+":"+m+":"+s)
 
+def calculateHours(time):
+    t = time.split(":")
+    h = float(t[0])
+    m = float(t[1])
+    s = float(t[2])
+    
+    hours = (h*3600 + m*60 + s) /3600
+    str_h = str(hours)
+    str_h = str_h[0:4]
+    
+    return(str_h)
+
+    
 def printToLog(name, time):
     time_msg = name + " , {};".format(time.strftime('%m/%d/%y %H:%M:%S'))
-    printToFile(logpath + 'log.log', time_msg, False)
+    printToFile('/home/pi/Desktop/Sign-In Script/log/log.log', time_msg, False)
 
 
 def printToFile(filename, text, overwrite):
@@ -157,17 +248,31 @@ def printToFile(filename, text, overwrite):
             file.write(text)
 	    file.close
     except ValueError:
-        print("Error writing to file")
-	
+        print("Error unknown tag %s" % (e.tag))
 
+#
+# Boilerplate formats and actions
+#
+         
+#Information Display Function
+def displayDeviceInfo():
+    print("|------------|----------------------------------|--------------|------------|")
+    print("|- Attached -|-              Type              -|- Serial No. -|-  Version -|")
+    print("|------------|----------------------------------|--------------|------------|")
+    print("|- %8s -|- %30s -|- %10d -|- %8d -|" % (rfid.isAttached(), rfid.getDeviceName(), rfid.getSerialNum(), rfid.getDeviceVersion()))
+    print("|------------|----------------------------------|--------------|------------|")
+    print("Number of outputs: %i -- Antenna Status: %s -- Onboard LED Status: %s" % (rfid.getOutputCount(), rfid.getAntennaOn(), rfid.getLEDOn()))
+         
+#Event Handler Callback Functions
 def rfidAttached(e):
-    time.sleep(5)
-    playSound('charge')
+    attached = e.device
+    actionOnAttach(e)
+    print("RFID %i Attached!" % (attached.getSerialNum()))
          
 def rfidDetached(e):
-    playSound('error')
-    time.sleep(3)
-    reboot()
+    detached = e.device
+    actionOnDetach(e)
+    print("RFID %i Detached!" % (detached.getSerialNum()))
          
 def rfidError(e):
     try:
@@ -177,53 +282,53 @@ def rfidError(e):
         print("Phidget Exception %i: %s" % (e.code, e.details))
          
 def rfidOutputChanged(e):
+    #source = e.device
+    #actionOnOutputChange(e)
+    #print("RFID %i: Output %i State: %s" % (source.getSerialNum(), e.index, e.state))
     print("")
     
 def rfidTagGained(e):
-	rfid.setLEDOn(1)
-    	t = e.tag
-    	command_text = runCommand(t)
-    	if command_text == "None":
-		name = getName(t)
-	now = datetime.datetime.now()
-    	printToLog(name, now)
-	if timeCardExists:              
-        	if time_line.count(":") >= 4:
-			login(name)
-		else:
-	        	logout(name)
-       	else:
-            		login(name)
-        
-		playSound('ding')
-	
-	
+    source = e.device
+    rfid.setLEDOn(1)
+    actionOnTagFound(e)
     
-def runCommand(tag):
-    flag = "None"
-    for idx in range(0,len(commandsList)):
-        command = commandsList[idx].split('=')
-	if command[0]==tag:
-	    flag = command[1]
-	    break
-    
-    try:
-	subprocess.call(flag)
-    except Exception as e:
-	print(e.code)
-	
-    return flag
-
+         
 def rfidTagLost(e):
+    source = e.device
     rfid.setLEDOn(0)
-    time.sleep(1)
+    actionOnTagLost(e)
+
+def init_anykey():
+    global old_settings
+    old_settings = termios.tcgetattr(sys.stdin)
+    new_settings = termios.tcgetattr(sys.stdin)
+    new_settings[3] = new_settings[3] & ~(termios.ECHO | termios.ICANON)
+    new_settings[6][termios.VMIN] = 0
+    new_settings[6][termios.VTIME] = 0
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, new_settings)
+
+
+def term_anykey():
+    global old_settings
+    if old_Settings:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+
+def getKey():
+    ch_set = []
+    ch = os.read(sys.stdin.fileno(), 1)
+    while ch != None and len(ch) > 0:
+        ch_set.append( ord(ch[0]))
+        ch = os.read(sys.stdin.fileno(), 1)
+        return ch_set
 
 def openDevice():
     try:
         rfid.openPhidget()
     except PhidgetException as e:
     	print("Phidget Exception %i: %s" % (e.code, e.details))
-    	reboot()
+    	print("Exiting....")
+    	exit(1)
             
 #Main Program Code
 try:
@@ -231,14 +336,19 @@ try:
     rfid.setOnAttachHandler(rfidAttached)
     rfid.setOnDetachHandler(rfidDetached)
     rfid.setOnErrorhandler(rfidError)
+    #rfid.setOnOutputChangeHandler(rfidOutputChanged)
     rfid.setOnTagHandler(rfidTagGained)
     rfid.setOnTagLostHandler(rfidTagLost)
 except PhidgetException as e:
     print("Phidget Exception %i: %s" % (e.code, e.details))
-    reboot()
+    print("Exiting....")
+    exit(1)
          
-
+print("Opening phidget object....")
 openDevice()
+         
+print("Waiting for attach....")
+
 try:
     rfid.waitForAttach(10000)
 except PhidgetException as e:
@@ -247,10 +357,32 @@ except PhidgetException as e:
         rfid.closePhidget()
     except PhidgetException as e:
         print("Phidget Exception %i: %s" % (e.code, e.details))
-        reboot()
+        print("Exiting....")
+        exit(1)
+#else:
+#    displayDeviceInfo()
 
+print("Turning on the RFID antenna....")
+time.sleep(0.25)
+rfid.setAntennaOn(False)
+time.sleep(0.25)
 rfid.setAntennaOn(True)
-chr = sys.stdin.read(1)
+         
+print("Press Enter to quit....")
+
+init_anykey()
+count = 0
+while True:
+    if count >= 10:
+        count = 0
+    else:
+        count = count+1
+    print(count)    
+    key = getKey()
+    if key != None:
+        print key
+    else:
+        time.sleep(1)
                  
 try:
     lastTag = rfid.getLastTag()
@@ -264,7 +396,8 @@ try:
     rfid.closePhidget()
 except PhidgetException as e:
     print("Phidget Exception %i: %s" % (e.code, e.details))
-    reboot()
+    print("Exiting....")
+    exit(1)
          
 print("Done.")
 exit(0)
