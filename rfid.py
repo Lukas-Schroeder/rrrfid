@@ -15,21 +15,16 @@ import math
 import termios
 
 #Phidget specific imports
-from Phidgets.PhidgetException import PhidgetErrorCodes, PhidgetException
-from Phidgets.Events.Events import AttachEventArgs, DetachEventArgs, ErrorEventArgs, OutputChangeEventArgs, TagEventArgs
-from Phidgets.Devices.RFID import RFID, RFIDTagProtocol
-from Phidgets.Phidget import PhidgetLogLevel
-
-
-
-
+from Phidget22.Devices.RFID import *
+from Phidget22.PhidgetException import *
+from Phidget22.Phidget import *
 
 #USER VARIABLES
 HOMEPATH = '/home/pi/Desktop/Sign-In Script/'
 AUDLIB = HOMEPATH + 'aud/'
 LOGPATH = HOMEPATH + 'log/'
 
-HIDDENPATH = '/var/www/html/'
+HIDDENPATH = '/var/www/'
 DISPLAY = HIDDENPATH + 'message.txt'
 TAGS = HIDDENPATH + 'tag.txt'
 COMMANDS = HIDDENPATH + 'commands.txt'
@@ -40,14 +35,11 @@ global RFID
 try:
     print("Opening phidget object....")
     RFID = RFID()
-    RFID.openPhidget()
+    RFID.openWaitForAttachment(5000)
 except RuntimeError as e:
     print("Runtime Exception: %s" % e.details)
     print("Exiting....")
     exit(1)
-
-
-
 
 
 Old_settings = None 
@@ -57,17 +49,31 @@ global Timecard
 global TagsList
 global CommandsList
 
-TagsList=list()
-with  open(TAGS) as f:
-    TagsList = f.read().splitlines()
 
-CommandsList=list()
-with open(COMMANDS) as f:
-    CommandsList = f.read().splitlines()
+def refreshList():
+    global TagsList
+    global CommandsList
+	
+    TagsList=list()
+    with  open(TAGS) as f:
+        TagsList = f.read().splitlines()
 
+    CommandsList=list()
+    with open(COMMANDS) as f:
+        CommandsList = f.read().splitlines()
 
-
-
+def register(tag):
+    global TagsList
+    #global CommandsList
+    
+    if len(TagsList) <= 0:
+        printToFile(HIDDENPATH+"tag.txt", tag + "=", False)
+    else:
+        printToFile(HIDDENPATH+"tag.txt", "\n" + tag + "=", False)
+        
+    snd = subprocess.Popen(['sudo', 'bash', HOMEPATH + "/bin/register.sh"])
+    snd.wait()	
+    refreshList();
 
 
 def login(Name):
@@ -75,7 +81,7 @@ def login(Name):
     Timecard = getTimecard(Name)
     now = getTime()
 
-    print("Psst, this person's pin is " + getPin(Name))
+    #print("Psst, this person's pin is " + getPin(Name))
     if new_card:
         time_msg = "{}".format( now.strftime('%m/%d/%y,%H:%M:%S,'))
     else:
@@ -83,7 +89,7 @@ def login(Name):
 
     printToFile(Timecard, time_msg, new_card)
     printToFile(DISPLAY, "Welcome, " + Name, True)
-    playSound('ding')
+    playSound('sign-in')
 
 def logout(Name):
     Timecard = getTimecard(Name)
@@ -102,21 +108,28 @@ def logout(Name):
     print(time_msg)
     printToFile(Timecard, time_msg + delta + " " + calculateHours(delta), False)
     printToFile(DISPLAY, "Goodbye, " + Name + " (" + delta + ")", True)
-    playSound('ding')
+    playSound('sign-out')
 
 def getName(tag):
     Name = "None"
+    global TagsList
     for idx in range(0,len(TagsList)):
         assignee=TagsList[idx].split('=')
         if assignee[0]==tag:
             Name=assignee[1]
             break
-        else:
-            Name='Guest_' + tag
+    if Name=="None":
+        register(tag)
+        for idx in range(0,len(TagsList)):
+            assignee=TagsList[idx].split('=')
+            if assignee[0]==tag:
+                Name=assignee[1]
+                break
     return Name
 
 def getPin(tag):
     Pin = "None"
+    global TagsList
     try:
         for idx in range(0,len(TagsList)):
             assignee=TagsList[idx].split('=')
@@ -130,6 +143,7 @@ def getPin(tag):
 
 def getNameByPin(pin):
     Name="None"
+    global TagsList
     try:
         for idx in range(0,len(TagsList)):
             assignee=TagsList[idx].split('=')
@@ -142,6 +156,8 @@ def getNameByPin(pin):
     return Name
 
 def getCommand(tag):
+    global CommandsList
+
     command = "None"
     for idx in range(0, len(CommandsList)):
         commands = CommandsList[idx].split('=')
@@ -209,56 +225,8 @@ def getDelta(in_time, out_time):
     
     return(h+":"+m+":"+s)
     
-def actionOnAttach(e):
-    #TODO  performed once when device attached
-    time.sleep(5)
-    playSound('charge')
-
-def actionOnDetach(e):
-    #TODO  performed once when device detached
-    playSound('error')
-    time.sleep(3)
-    reboot()
-
-def actionOnOutputChange(e):
-    #TODO  performed once when terminal block output changes
-    print("Attached")
-
-def actionOnTagFound(e):
-    #TODO  performed once when tag is in range
-    t = e.tag
-    if t == "Guest1":
-        reboot()
-    print(t)
-    if runCommand(t) == "None":
-        try:
-                
-            Name = getName(t)
-            Timecard = getTimecard(Name)
-            now = getTime();
-
-            printToLog(Name, now)
-
-            if timecardFound(Name):                    
-                with open(Timecard) as ts:
-                    times = ts.read().splitlines()
-            
-                if times[len(times)-1].count(":") >= 4:
-                    login(Name)
-                else:
-                    logout(Name)
-            else:
-                login(Name)
-        except ValueError:
-            print("Error unknown tag %s" % (t))
-    
-
 def printToScreen(text):
     printToFile(DISPLAY, text, True)
-
-def actionOnTagLost(e):
-    #TODO  performed once when tag is out of range
-    time.sleep(1)
 
 def calculateHours(time):
     t = time.split(":")
@@ -307,32 +275,49 @@ def runCommand(tag):
 
 #Event Handler Callback Functions
 def RFIDAttached(e):
-    attached = e.device
-    actionOnAttach(e)
-    print("RFID %i Attached!" % (attached.getSerialNum()))
+    #time.sleep(5)
+    playSound('startup')
          
 def RFIDDetached(e):
-    detached = e.device
-    actionOnDetach(e)
-    print("RFID %i Detached!" % (detached.getSerialNum()))
+    playSound('error')
+    time.sleep(3)
+    reboot()
          
-def RFIDError(e):
-    try:
-        source = e.device
-        print("RFID %i: Phidget Error %i: %s" % (source.getSerialNum(), e.eCode, e.description))
-    except PhidgetException as e:
-        print("Phidget Exception %i: %s" % (e.code, e.details))
+def RFIDError(e, eCode, description):
+    print("Error %i : %s" % (eCode, description))
          
-def RFIDTagGained(e):
-    source = e.device
-    RFID.setLEDOn(1)
-    actionOnTagFound(e)
+def RFIDTagGained(e, tag, protocol):
+    #TODO  performed once when tag is in range
+    t = tag
+    if t == "Guest1":
+        reboot()
+        
+    if runCommand(t) == "None":
+        try:
+                
+            Name = getName(t)
+            Timecard = getTimecard(Name)
+            now = getTime();
+            
+            printToLog(Name, now)
+
+            if timecardFound(Name):                    
+                with open(Timecard) as ts:
+                    times = ts.read().splitlines()
+            
+                if times[len(times)-1].count(":") >= 4:
+                    login(Name)
+                else:
+                    logout(Name)
+            else:
+                login(Name)
+        except ValueError:
+            print("Error unknown tag %s" % (t))
     
          
-def RFIDTagLost(e):
-    source = e.device
-    RFID.setLEDOn(0)
-    actionOnTagLost(e)
+def RFIDTagLost(e, tag, protocol):
+    #RFID.setLEDOn(0)
+    time.sleep(1)
 
 def init_anykey():
     global Old_settings
@@ -359,19 +344,15 @@ def getKey():
     return ch_set
 
 #Main Program Code
+refreshList()
 try:
     RFID.setOnAttachHandler(RFIDAttached)
     RFID.setOnDetachHandler(RFIDDetached)
-    RFID.setOnErrorhandler(RFIDError)
+    RFID.setOnErrorHandler(RFIDError)
+
     RFID.setOnTagHandler(RFIDTagGained)
     RFID.setOnTagLostHandler(RFIDTagLost)
-
-    print("Waiting for attach....")
-    RFID.waitForAttach(10000)
-
-    print("Turning on the RFID antenna....")
-    RFID.setAntennaOn(True)
-         
+       
     print("Press Enter to quit....")
 
     #TODO constant run code here
@@ -384,13 +365,6 @@ try:
         time.sleep(.25)
 
         key = getKey()
-
-
-# 55 56 57   
-# 52 53 54
-# 49 50 51 10
-# 48
-
 
         if not key == None:
             key_str = str(key).replace("[", "")
@@ -416,7 +390,6 @@ try:
 
         if len(entry) >= 4:
             try:
-                
                 Name = getNameByPin(entry)
                 if Name != "None":
                     Timecard = getTimecard(Name)
@@ -435,25 +408,21 @@ try:
                     else:
                         login(Name)
                 else:
-                        playSound("error")
+                        playSound('error')
             except ValueError:
                 print("Error with pin entry")
             entry = ""
             printToFile(DISPLAY, "", True)
 
-
-
-
-
-        
-        #if s == "10":
-        #    flag = False
+        # 10 = Enter
+        if s == "10":
+            flag = False
 
     print("Key pressed. Leaving")
     
     print("Closing...")
     try:
-        RFID.closePhidget()
+        RFID.close()
     except PhidgetException as e:
         print("Phidget Exception %i: %s" % (e.code, e.details))
         print("Error closing Phidget....")
